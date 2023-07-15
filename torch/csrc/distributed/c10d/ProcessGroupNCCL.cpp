@@ -409,14 +409,19 @@ bool ProcessGroupNCCL::WorkNCCL::startedGPUExecutionInternal() const {
 }
 
 bool ProcessGroupNCCL::WorkNCCL::finishedGPUExecutionInternal() const {
+  auto mode = cudaStreamCaptureModeThreadLocal;
+  C10_CUDA_CHECK(cudaThreadExchangeStreamCaptureMode(&mode));
   try {
     for (const auto i : c10::irange(devices_.size())) {
       // Checking the work's corresponding CUDA events' status
       if (!(*ncclEndEvents_)[i].query()) {
+	C10_CUDA_CHECK(cudaThreadExchangeStreamCaptureMode(&mode));
         return false;
       }
+      C10_CUDA_CHECK(cudaThreadExchangeStreamCaptureMode(&mode));
     }
   } catch (const std::exception& e) {
+    C10_CUDA_CHECK(cudaThreadExchangeStreamCaptureMode(&mode));
     if (std::string(e.what()).find("driver shutting down") ==
         std::string::npos) {
       throw;
@@ -825,10 +830,7 @@ ProcessGroupNCCL::~ProcessGroupNCCL() {
 void ProcessGroupNCCL::ncclCommWatchdog() {
   try {
     LOG(INFO) << "[Rank " << rank_ << "] NCCL watchdog thread started!";
-    auto mode = cudaStreamCaptureModeThreadLocal;
-    C10_CUDA_CHECK(cudaThreadExchangeStreamCaptureMode(&mode));
     workCleanupLoop();
-    C10_CUDA_CHECK(cudaThreadExchangeStreamCaptureMode(&mode));
     LOG(INFO) << "[Rank " << rank_
               << "] NCCL watchdog thread terminated normally";
   } catch (std::exception& e) {
@@ -887,7 +889,6 @@ void ProcessGroupNCCL::workCleanupLoop() {
         lock,
         std::chrono::milliseconds(kWatchdogThreadSleepMillis),
         [&]() -> bool { return terminateProcessGroup_.load(); });
-
     for (auto it = workMetaList_.begin(); it != workMetaList_.end();
          /* no increment*/) {
       auto& work = *it;
