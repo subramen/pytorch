@@ -103,6 +103,7 @@ aten_bias_addmm = ExternKernelChoice(bias_addmm, None)
 @register_lowering(aten.mm)
 def tuned_mm(mat1, mat2, *, layout=None):
     m, n, k, layout, mat1, mat2 = mm_args(mat1, mat2, layout=layout)
+    print(f"{m=}, {type(m)=}, {n=}, {type(n)=}, {k=}, {type(k)=}, {mat1=}, {mat2=}, {layout=}")
 
     # options to tune from
     choices = [aten_mm.bind((mat1, mat2), layout)]

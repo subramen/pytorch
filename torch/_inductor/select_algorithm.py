@@ -21,7 +21,7 @@ from . import config, ir
 from .autotune_process import BenchmarkRequest, TensorMeta
 from .codecache import code_hash, PersistentCache, PyCodeCache
 
-from .codegen.common import IndentedBuffer
+from .codegen.common import IndentedBuffer, jinja2_env
 from .codegen.triton import texpr, TritonKernel, TritonPrinter, TritonScheduling
 
 from .codegen.triton_utils import config_of, signature_of
@@ -326,25 +326,13 @@ class TritonTemplateKernel(TritonKernel):
             )
 
 
-@functools.lru_cache(None)
-def _jinja2_env():
-    try:
-        import jinja2
-
-        return jinja2.Environment(
-            undefined=jinja2.StrictUndefined,
-        )
-    except ImportError:
-        return None
-
-
 class TritonTemplate:
     index_counter = itertools.count()
     all_templates = dict()
 
     @staticmethod
     def _template_from_string(source):
-        env = _jinja2_env()
+        env = jinja2_env()
         if env is not None:
             return env.from_string(source)
         return None

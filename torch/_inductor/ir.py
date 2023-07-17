@@ -316,6 +316,9 @@ class IRNode:
         """
         raise NotImplementedError(f"realize NYI on {type(self)}")
 
+    def get_layout(self):
+        raise NotImplementedError(f"get_layout() is not implemented by {type(self)}!")
+
 
 @dataclasses.dataclass
 class Loops(IRNode):
@@ -1162,6 +1165,11 @@ class BaseView(IRNode):
     def get_dtype(self):
         return self.data.get_dtype()
 
+
+    def get_layout(self):
+        return self.data.get_layout()
+
+
     def get_device(self):
         return self.data.get_device()
 
@@ -1563,6 +1571,9 @@ class ReinterpretView(BaseView):
 
     def get_dtype(self):
         return self.layout.dtype
+
+    def get_layout(self):
+        return self.layout
 
     def get_size(self):
         return list(self.layout.size)

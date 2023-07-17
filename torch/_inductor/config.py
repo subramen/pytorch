@@ -375,6 +375,25 @@ class triton:
     inject_relu_bug_TESTING_ONLY = None
 
 
+class cuda:
+    # Whether to enable custom CUDA kernels.
+    # If True, both Triton and custom CUDA kernel codegen are enabled.
+    # If False, only Triton codegen is enabled.
+    enabled = False
+
+    # CUDA arch to use for CUDA template kernel compilation.
+    # Available options: "70", "75", "80", "90"
+    # When arch is None, the Inductor tries to detect CUDA arch by querying
+    # CUDA Python lib or "nvidia-smi" commandline.
+    arch = None
+
+    # CUDA version to use for CUDA template kernel compilation.
+    # e.g. "11.4", "12.1", etc.
+    # When version is None, the Inductor tries to detech CUDA version by
+    # querying CUDA Python lib for "nvidia-smi" commandline.
+    version = None
+
+
 # create a directory containing lots of debug information
 class trace:
     # master switch for all debugging flags below
