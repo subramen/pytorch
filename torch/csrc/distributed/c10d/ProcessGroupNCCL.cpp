@@ -826,8 +826,9 @@ void ProcessGroupNCCL::ncclCommWatchdog() {
   try {
     LOG(INFO) << "[Rank " << rank_ << "] NCCL watchdog thread started!";
     // test if runtime API call works...
-    int count;
-    cudaGetDeviceCount(&count);
+    auto mode = cudaStreamCaptureModeGlobal;
+    cudaThreadExchangeStreamCaptureMode(&mode);
+    cudaThreadExchangeStreamCaptureMode(&mode);
     LOG(INFO) << "[Rank " << rank_ << "] Count: " << count;
     workCleanupLoop();
     LOG(INFO) << "[Rank " << rank_
