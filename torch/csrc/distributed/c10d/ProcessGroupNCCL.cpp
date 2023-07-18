@@ -830,8 +830,7 @@ void ProcessGroupNCCL::ncclCommWatchdog() {
     LOG(INFO) << "[Rank " << rank_ << "] NCCL watchdog thread started!";
     // test if runtime API call works...
     auto skew_start = std::chrono::steady_clock::now();
-    auto mode = cudaStreamCaptureModeGlobal;
-    cudaThreadExchangeStreamCaptureMode(&mode);
+    auto mode = cudaStreamCaptureModeRelaxed;
     cudaThreadExchangeStreamCaptureMode(&mode);
     auto skew_end = std::chrono::steady_clock::now();
     auto skew = std::chrono::duration_cast<std::chrono::milliseconds>(
