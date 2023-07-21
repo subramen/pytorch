@@ -91,6 +91,7 @@ from torch.testing._comparison import (
 from torch.testing._comparison import not_close_error_metas
 from torch.testing._internal.common_dtype import get_all_dtypes
 import torch.utils._pytree as pytree
+from torch.profiler import profile
 
 from .composite_compliance import no_dispatch
 
@@ -1108,7 +1109,7 @@ TEST_CUDA_GRAPH = TEST_CUDA and (not TEST_SKIP_CUDAGRAPH) and (
 if TEST_CUDA and 'NUM_PARALLEL_PROCS' in os.environ:
     num_procs = int(os.getenv("NUM_PARALLEL_PROCS", "2"))
     # other libraries take up about 11% of space per process
-    torch.cuda.set_per_process_memory_fraction(round(1 / num_procs - .11, 2))
+    torch.cuda.set_per_process_memory_fraction(0.25)
 
 
 def skipIfCrossRef(fn):
