@@ -746,6 +746,7 @@ class Kernel(CodeGen):
         # set in set_current_node
         self.current_node = None
         self.node_to_bounds: Optional[Dict[torch.fx.Node, ValueRanges]] = None
+        self.kernel_name = None
 
     @contextlib.contextmanager
     def set_current_node(self, node):

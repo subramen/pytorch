@@ -12,6 +12,7 @@ from sympy import Expr
 
 import torch
 from torch._dynamo.utils import counters, dynamo_timed
+from torch._inductor.codegen.multi_kernel import MultiKernelState
 from torch.fx.experimental.symbolic_shapes import SymTypes
 from torch.fx.node import _get_qualified_name
 from .. import codecache, config, ir
@@ -299,6 +300,7 @@ class WrapperCodeGen(CodeGen):
 
         self.add_import_once = add_import_once
         self._metas = {}
+        self.multi_kernel_state = MultiKernelState()
 
     def write_constant(self, name, hashed):
         self.header.writeline(f"{name} = None  # {hashed}")
@@ -319,6 +321,7 @@ class WrapperCodeGen(CodeGen):
                 from torch import empty_strided, as_strided, device
                 from {codecache.__name__} import AsyncCompile
                 from torch._inductor.select_algorithm import extern_kernels
+                from torch._inductor.codegen.multi_kernel import MultiKernelCall
 
                 aten = torch.ops.aten
                 assert_size_stride = torch._C._dynamo.guards.assert_size_stride

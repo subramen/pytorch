@@ -48,6 +48,7 @@ from .common import (
     PythonPrinter,
     SizeArg,
 )
+from .multi_kernel import MultiKernel
 from .triton_utils import config_of, signature_of
 
 log = logging.getLogger(__name__)
@@ -745,6 +746,7 @@ class TritonKernel(Kernel):
         mutations=None,
         pid_cache=None,
         reduction_hint=ReductionHint.DEFAULT,
+        disable_persistent_reduction=False,
     ):
         if pid_cache is None:
             pid_cache = {}
@@ -766,7 +768,9 @@ class TritonKernel(Kernel):
         self.indirect_max_sizes: Dict[Tuple[str, str], [sympy.Expr, str]] = {}
         self.last_usage = set()
 
-        self.persistent_reduction = self.should_use_persistent_reduction()
+        self.persistent_reduction = (
+            not disable_persistent_reduction
+        ) and self.should_use_persistent_reduction()
         self.no_x_dim = (
             self.reduction_hint == ReductionHint.INNER
             and self.persistent_reduction
@@ -2254,19 +2258,41 @@ class TritonScheduling:
             node_schedule, numel, reduction_numel
         )
 
+        kernel_args = tiled_groups
+        kernel_kwargs = {
+            "reduction_hint": reduction_hint_val,
+            "mutations": mutations,
+            "index_dtype": index_dtype,
+        }
+        V.graph.save_state()
         kernel = TritonKernel(
-            *tiled_groups,
-            reduction_hint=reduction_hint_val,
-            mutations=mutations,
-            index_dtype=index_dtype,
+            *kernel_args,
+            **kernel_kwargs,
         )
 
         self.codegen_node_schedule_with_kernel(node_schedule, kernel)
 
         src_code = kernel.codegen_kernel()
         kernel_name = self.define_kernel(src_code, node_schedule)
+        kernel.kernel_name = kernel_name
 
-        kernel.call_kernel(kernel_name)
+        if kernel.persistent_reduction and config.triton.multi_kernel:
+            V.graph.restore_state()
+            kernel2 = TritonKernel(
+                *kernel_args,
+                **kernel_kwargs,
+                disable_persistent_reduction=True,
+            )
+            self.codegen_node_schedule_with_kernel(node_schedule, kernel2)
+            src_code2 = kernel2.codegen_kernel()
+            kernel_name2 = self.define_kernel(src_code2, node_schedule)
+            kernel2.kernel_name = kernel_name2
+
+            multi_kernel = MultiKernel([kernel, kernel2])
+            multi_kernel.call_kernel()
+        else:
+            V.graph.drop_state()
+            kernel.call_kernel(kernel_name)
 
         if config.warn_mix_layout:
             kernel.warn_mix_layout(kernel_name)
@@ -2350,6 +2376,7 @@ class TritonScheduling:
             wrapper.define_kernel(
                 kernel_name, compile_wrapper.getvalue(), metadata_comment
             )
+
         return kernel_name
 
     def codegen_template(self, template_node, epilogue_nodes):

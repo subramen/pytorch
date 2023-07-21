@@ -1,3 +1,5 @@
+import copy
+import dataclasses
 import hashlib
 import logging
 import operator
@@ -97,6 +99,14 @@ def may_get_constant_buffer_dtype(constant_buffer):
 def is_magic_method(op):
     magic_ops = {method_to_operator(m) for m in magic_methods}
     return op in magic_ops
+
+
+@dataclasses.dataclass
+class GraphState:
+    removed_buffers: Set[str]
+    wrapper_allocated: Set[str]
+    wrapper_freed: Set[str]
+    wrapper_num_lines: int
 
 
 class GraphLowering(torch.fx.Interpreter):
@@ -208,6 +218,31 @@ class GraphLowering(torch.fx.Interpreter):
         ] = (
             []
         )  # This is the linemap used by the profiler to mark custom compiled kernels getting run
+        self.saved_state: List[GraphState] = []
+
+    def save_state(self):
+        assert self.wrapper_code
+        self.saved_state.append(
+            GraphState(
+                removed_buffers=copy.deepcopy(self.removed_buffers),
+                wrapper_allocated=copy.deepcopy(self.wrapper_code.allocated),
+                wrapper_freed=copy.deepcopy(self.wrapper_code.freed),
+                wrapper_num_lines=len(self.wrapper_code.lines),
+            )
+        )
+
+    def restore_state(self):
+        assert self.wrapper_code
+        state = self.saved_state[-1]
+        self.removed_buffers = state.removed_buffers
+        self.wrapper_code.allocated = state.wrapper_allocated
+        self.wrapper_code.freed = state.wrapper_freed
+        assert len(self.wrapper_code.lines) >= state.wrapper_num_lines
+        self.wrapper_code.lines = self.wrapper_code.lines[: state.wrapper_num_lines]
+        self.drop_state()
+
+    def drop_state(self):
+        self.saved_state.pop()
 
     @staticmethod
     def decide_layout_opt(gm) -> bool:
