@@ -1,23 +1,44 @@
 #pragma once
 
+#include <assert.h>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
-#include <ATen/ATen.h>
+#include <cuda.h>
+#include <cuda_runtime.h>
 
-#include <c10/cuda/CUDAGuard.h>
+#include <torch/csrc/inductor/aot_inductor_tensor.h>
 
-#define AOT_VECTOR_SIZE_CHECK(vec, expected_size) \
-  {                                               \
-    auto actual_size = vec.size();                \
-    TORCH_CHECK(                                  \
-        actual_size == expected_size,             \
-        "expected vector size to be ",            \
-        std::to_string(expected_size),            \
-        ", but got ",                             \
-        std::to_string(actual_size));             \
+#define AOT_VECTOR_SIZE_CHECK(vec, expected_size)                 \
+  {                                                               \
+    auto actual_size = vec.size();                                \
+    std::string msg = "expected vector size to be ";              \
+    msg += std::to_string(expected_size);                         \
+    msg += ", but got ";                                          \
+    msg += std::to_string(actual_size);                           \
+    AOT_INDUCTOR_CHECK(actual_size == expected_size, msg.c_str()) \
   }
+
+#define CUDA_DRIVER_CHECK(EXPR)                       \
+  do {                                                \
+    CUresult __err = EXPR;                            \
+    if (__err != CUDA_SUCCESS) {                      \
+      std::string msg = "CUDA driver error: ";        \
+      msg += std::to_string(static_cast<int>(__err)); \
+      AOT_INDUCTOR_CHECK(false, msg.c_str())          \
+    }                                                 \
+  } while (0);
+
+#define CUDA_ERROR_CHECK(EXPR)                 \
+  do {                                         \
+    cudaError_t __err = EXPR;                  \
+    if (__err != cudaSuccess) {                \
+      std::string msg = "CUDA driver error: "; \
+      msg += std::to_string(__err);            \
+      AOT_INDUCTOR_CHECK(false, msg.c_str())   \
+    }                                          \
+  } while (0);
 
 namespace torch {
 namespace aot_inductor {
@@ -33,11 +54,11 @@ class AOTInductorModelBase {
  public:
   AOTInductorModelBase(size_t num_inputs, size_t num_outputs)
       : inputs_info_(num_inputs), outputs_info_(num_outputs) {
-    C10_CUDA_CHECK(cudaEventCreate(&run_finished_));
+    CUDA_ERROR_CHECK(cudaEventCreate(&run_finished_));
   }
 
   ~AOTInductorModelBase() {
-    C10_CUDA_CHECK(cudaEventDestroy(run_finished_));
+    CUDA_ERROR_CHECK(cudaEventDestroy(run_finished_));
   }
 
   AOTInductorModelBase(AOTInductorModelBase&&) = delete;
@@ -49,15 +70,15 @@ class AOTInductorModelBase {
   // Passes such as constant-folding may affect how we handle constants.
   // We will revisit it once all the relevant pieces are ready.
   void run(
-      const std::vector<at::Tensor>& inputs,
-      std::vector<at::Tensor>& outputs,
+      std::vector<AotInductorTensor>& inputs,
+      std::vector<AotInductorTensor>& outputs,
       cudaStream_t stream) {
     AOT_VECTOR_SIZE_CHECK(inputs, num_inputs());
     AOT_VECTOR_SIZE_CHECK(outputs, num_outputs());
 
     auto* model = static_cast<Model*>(this);
     model->run_impl(inputs, outputs, stream);
-    C10_CUDA_CHECK(cudaEventRecord(run_finished_, stream));
+    CUDA_ERROR_CHECK(cudaEventRecord(run_finished_, stream));
   }
 
   size_t num_inputs() const {
@@ -100,7 +121,7 @@ class AOTInductorModelBase {
 
   /// Synchronizes completion event.
   void wait_for_completion() {
-    C10_CUDA_CHECK(cudaEventSynchronize(run_finished_));
+    CUDA_ERROR_CHECK(cudaEventSynchronize(run_finished_));
   }
 
  protected:
@@ -110,14 +131,15 @@ class AOTInductorModelBase {
         : lower_bound_(lb), upper_bound_(ub), value_ptr_(val_ptr) {}
 
     void set_value(int64_t val) {
-      TORCH_CHECK(
-          val < lower_bound_ || val > upper_bound_,
-          "dim value out of bounds: expected value to be in [",
-          std::to_string(lower_bound_),
-          ", ",
-          std::to_string(upper_bound_),
-          "], but got ",
-          std::to_string(val));
+      std::string msg = "dim value out of bounds: expected value to be in [";
+      msg += std::to_string(lower_bound_);
+      msg += ", ";
+      msg += std::to_string(upper_bound_);
+      msg += "], but got ";
+      msg += std::to_string(val);
+
+      AOT_INDUCTOR_CHECK(val < lower_bound_ || val > upper_bound_, msg.c_str())
+
       *value_ptr_ = val;
     }
 
@@ -167,8 +189,8 @@ class AOTInductorModel : public AOTInductorModelBase<AOTInductorModel> {
   AOTInductorModel();
 
   void run_impl(
-      const std::vector<at::Tensor>& inputs,
-      std::vector<at::Tensor>& outputs,
+      std::vector<AotInductorTensor>& args,
+      std::vector<AotInductorTensor>& outputs,
       cudaStream_t stream);
 
   static std::unique_ptr<AOTInductorModel> Create() {

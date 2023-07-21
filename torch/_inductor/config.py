@@ -54,12 +54,6 @@ group_fusion = False
 # enable reordering pass
 reordering = True
 
-# AOTInductor output path
-# If an absolute path is specified, the generated lib files will be stored under the directory;
-# If a relative path is specified, it will be used as a subdirectory under the default caching path;
-# If not specified, a temp directory will be created under the default caching path
-aot_inductor_output_path = ""
-
 # enable slow autotuning passes to select algorithms
 max_autotune = os.environ.get("TORCHINDUCTOR_MAX_AUTOTUNE") == "1"
 
@@ -370,6 +364,17 @@ class triton:
     # extraction and minification functionality.
     # Valid values: "compile_error", "runtime_error", "accuracy"
     inject_relu_bug_TESTING_ONLY = None
+
+
+class aot_inductor:
+    # AOTInductor output path
+    # If an absolute path is specified, the generated lib files will be stored under the directory;
+    # If a relative path is specified, it will be used as a subdirectory under the default caching path;
+    # If not specified, a temp directory will be created under the default caching path
+    output_path = ""
+
+    # Generate C calls to avoid ABI compatibility issues
+    abi_compatible = True  # will use is_fbcode()
 
 
 # create a directory containing lots of debug information
