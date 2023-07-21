@@ -127,6 +127,10 @@ else()
   endif()
 
   append_torchlib_if_found(sleef asmjit)
+
+  if(@USE_MIMALLOC@)
+    append_torchlib_if_found(mimalloc-static)
+  endif()
 endif()
 
 if(@USE_KINETO@)
