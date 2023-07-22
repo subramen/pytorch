@@ -303,7 +303,7 @@ T = TypeVar("T", FwdKernel, BwdKernel)
 
 
 def write_decl_impl(
-    kernels: List[T], family_name: str, impl_file: str, autogen_dir: Path, disable_def: str = None
+    kernels: List[T], family_name: str, impl_file: str, autogen_dir: Path, disable_def: Optional[str] = None
 ) -> None:
     cpp_file_header = """/*
  * Copyright (c) Meta Platforms, Inc. and affiliates.

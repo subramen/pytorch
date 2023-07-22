@@ -3,7 +3,7 @@ import torch
 from collections import defaultdict
 
 from torch import nn, Tensor
-from typing import List, Tuple, Dict, Union, Callable
+from typing import List, Tuple, Dict, Union, Callable, Optional
 
 # Type helpers
 InputsType = Union[Tensor, Tuple[Tensor, ...]]
@@ -71,7 +71,7 @@ def load_weights(mod: nn.Module, names: List[str], params: Tuple[Tensor, ...]) -
         _set_nested_attr(mod, name.split("."), p)
 
 # Utilities to read/write markdown table-like content.
-def to_markdown_table(res: TimingResultType, header: Tuple[str, ...] = None) -> str:
+def to_markdown_table(res: TimingResultType, header: Optional[Tuple[str, ...]] = None) -> str:
     if header is None:
         header = ("model", "task", "mean", "var")
     out = ""
