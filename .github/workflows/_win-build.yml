@@ -16,6 +16,11 @@ on:
         type: boolean
         default: false
         description: If set, build in debug mode.
+      build-shared-libs:
+        required: false
+        type: boolean
+        default: true
+        description: If set, build in as shared libs.
       sync-tag:
         required: false
         type: string
@@ -116,6 +121,7 @@ jobs:
           BUILD_ENVIRONMENT: ${{ inputs.build-environment }}
           BUILD_WHEEL: 1
           MAX_JOBS: 8
+          BUILD_SHARED_LIBS: ${{ inputs.build-shared-libs }}
           CUDA_VERSION: ${{ inputs.cuda-version }}
           PYTHON_VERSION: "3.8"
           SCCACHE_BUCKET: "ossci-compiler-cache"
