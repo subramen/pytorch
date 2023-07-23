@@ -2044,7 +2044,7 @@ jobs:
       aws-pytorch-uploader-secret-access-key: ${{ secrets.AWS_PYTORCH_UPLOADER_SECRET_ACCESS_KEY }}
       conda-pytorchbot-token: ${{ secrets.CONDA_PYTORCHBOT_TOKEN }}
     uses: ./.github/workflows/_binary-upload.yml
-    libtorch-cuda11_8-static-build-deps-release-build:
+  libtorch-cuda11_8-static-build-deps-release-build:
     if: ${{ github.repository_owner == 'pytorch' }}
     runs-on: windows.4xlarge.nonephemeral
     timeout-minutes: 240
@@ -2298,7 +2298,6 @@ jobs:
       aws-pytorch-uploader-secret-access-key: ${{ secrets.AWS_PYTORCH_UPLOADER_SECRET_ACCESS_KEY }}
       conda-pytorchbot-token: ${{ secrets.CONDA_PYTORCHBOT_TOKEN }}
     uses: ./.github/workflows/_binary-upload.yml
- 
   libtorch-cuda12_1-shared-with-deps-release-build:
     if: ${{ github.repository_owner == 'pytorch' }}
     runs-on: windows.4xlarge.nonephemeral
