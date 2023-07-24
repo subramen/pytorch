@@ -3,7 +3,7 @@ import weakref
 import torch
 import torch.distributed as dist
 import torch.distributed.distributed_c10d as c10d
-from typing import List, cast
+from typing import List, cast, Optional
 
 """
 Moved eager kernel implementations to a separate file partly for readability and partly as it is currently
@@ -86,6 +86,13 @@ def _wait_tensor(tensor: torch.Tensor) -> torch.Tensor:
     if wait_reg is not None:
         wait_reg.wait()
     return tensor
+
+def _tensor_needs_wait(tensor: torch.Tensor) -> Optional[bool]:
+    data_ptr = tensor.data_ptr()
+    wait_reg = data_ptr_to_work.get(data_ptr)
+    if wait_reg is None:
+        return None
+    return wait_reg.work is not None
 
 def _str_to_reduce_op(reduceOp: str) -> dist.ReduceOp:
     reduceOp = reduceOp.upper()

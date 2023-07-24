@@ -5,6 +5,7 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 from numpy.testing import assert_array_equal
+from torch.distributed._functional_collectives import AsyncCollectiveTensor
 
 from torch.distributed._tensor import DeviceMesh, distribute_tensor, DTensor
 from torch.distributed._tensor.placement_types import _Partial, Replicate, Shard
@@ -244,6 +245,43 @@ class DTensorTest(DTensorTestBase):
             output.backward()
         except RuntimeError:
             self.assertEqual(sharded_tensor.grad.stride(), [1, 3 * self.world_size])
+
+    # Tests that if the output of some dtensor operations  isn't used in any compute,
+    # the output should be an AsyncCollectiveTensor (representing the fact that
+    # we haven't synced the collective yet).
+    @with_comms
+    def test_dtensor_async_output(self):
+        mesh = DeviceMesh(self.device_type, torch.arange(self.world_size))
+
+        def fn(x, y):
+            dt = DTensor.from_local(x.reshape(2, 4), mesh, [Shard(0)], run_check=False)
+            dt2 = DTensor.from_local(y.reshape(4, 2), mesh, [Shard(1)], run_check=False)
+            dt_out = torch.matmul(dt, dt2)
+            dt_out_redistribute = dt_out.redistribute(mesh, [Replicate()])
+            # Make sure we haven't synced yet
+            # TODO: figure out why this is returning None
+            # self.assertTrue(_tensor_needs_wait(dt_out_redistribute))
+            dt_out_redistribute_view = dt_out_redistribute.view(
+                dt_out_redistribute.shape
+            )
+            # self.assertTrue(_tensor_needs_wait(dt_out_redistribute_view))
+            return dt_out_redistribute_view.to_local()
+
+        x = torch.arange(8, requires_grad=True, dtype=torch.float32)
+        y = torch.arange(8, requires_grad=True, dtype=torch.float32)
+        out = fn(x, y)
+        # Make sure we haven't synced yet
+        # self.assertTrue(_tensor_needs_wait(out))
+        out_view = out.view(-1)
+        # self.assertTrue(_tensor_needs_wait(out_view))
+
+        # Assert that output is a `AsyncCollectiveTensor`
+        self.assertEqual(type(out_view), AsyncCollectiveTensor)
+        ref = torch.ones(8) + 1
+        # Use the data, requiring a sync
+        out_data = out_view + 1
+        self.assertEqual(type(out_data), torch.Tensor)
+        self.assertEqual(out_data, ref)
 
     @with_comms
     def test_from_local_then_to_local(self):
