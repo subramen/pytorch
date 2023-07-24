@@ -35,6 +35,7 @@ from .ctx_manager import (
     NullContextVariable,
     TorchFunctionDisableVariable,
 )
+from .dicts import ConstDictVariable
 from .distributed import is_from_local
 from .higher_order_ops import TorchHigherOrderOperatorVariable
 from .lists import ListVariable, TupleVariable
@@ -587,7 +588,24 @@ class TorchVariable(VariableTracker):
             if len(args) != 2:
                 unimplemented("Unsupported unflatten with len(args) != 2")
 
-            return torch.utils._pytree.tree_unflatten(args[0], args[1].value)
+            unflattened = torch.utils._pytree.tree_unflatten(args[0], args[1].value)
+            if isinstance(unflattened, list):
+                return ListVariable(unflattened, **options)
+            if isinstance(unflattened, tuple):
+                return TupleVariable(list(unflattened), **options)
+            if isinstance(unflattened, dict):
+                return ConstDictVariable(unflattened, type(unflattened), **options)
+            assert isinstance(unflattened, VariableTracker)
+            return unflattened
+
+        elif self.value == torch.fx._pytree.tree_flatten_spec:
+            if len(args) != 2:
+                unimplemented("Unsupported flatten_spec with len(args) != 2")
+
+            flattened, spec = torch.fx._pytree.tree_flatten_spec(args[0], args[1].value)
+            return TupleVariable(
+                [ListVariable(flattened), ConstantVariable(spec)], **options
+            )
         elif self.value == torch.utils._pytree.tree_map_only:
             if len(args) != 3:
                 unimplemented("Unsupported tree_map_only with len(args) != 3")
