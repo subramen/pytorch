@@ -886,19 +886,13 @@ class Softshrink(Module):
 def _check_arg_device(x: Optional[torch.Tensor]) -> bool:
     if x is None:
         return True
-    else:
-        return x.device.type in ["cpu", "cuda", torch.utils.backend_registration._privateuse1_backend_name]
-
-    return False
+    return x.device.type in ["cpu", "cuda", torch.utils.backend_registration._privateuse1_backend_name]
 
 
 def _arg_requires_grad(x: Optional[torch.Tensor]) -> bool:
     if x is None:
         return False
-    else:
-        return x.requires_grad
-
-    return True
+    return x.requires_grad
 
 
 class MultiheadAttention(Module):
