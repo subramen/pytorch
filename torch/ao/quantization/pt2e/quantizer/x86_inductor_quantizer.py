@@ -9,6 +9,7 @@ from .quantizer import (
     OperatorPatternType,
     QuantizationConfig,
     QuantizationSpec,
+    SharedQuantizationSpec,
     Quantizer,
     QuantizationAnnotation,
 )
@@ -28,17 +29,85 @@ from torch.ao.quantization.observer import (
     PerChannelMinMaxObserver,
 )
 from torch.ao.quantization.qconfig import _ObserverOrFakeQuantizeConstructor
-from typing import List, Dict, Optional, Set, Any
+from typing import List, Dict, Optional, Set, Any, Tuple
 from torch.fx import Node
 from torch.fx.passes.utils.source_matcher_utils import (
     get_source_partitions,
     SourcePartition,
 )
+from dataclasses import dataclass
 
 __all__ = [
     "X86InductorQuantizer",
     "get_default_x86_inductor_quantization_config",
 ]
+
+@dataclass
+class _X86InductorQuantizationAnnotation(QuantizationAnnotation):
+    # _is_output_of_fusion_pattern:
+    #  * Node as output node of a fusion pattern.
+    _is_output_of_fusion_pattern: bool = False
+    # _is_quantized_single_node:
+    #  * Node doesn't belong to any fusion pattern.
+    #  * Node among the quantizable_ops_pt2e set.
+    #  * Node has fake quant inserted at all of the inputs.
+    _is_quantized_single_node: bool = False
+
+# Ops support int8 data type and excludes ops like conv, linear.
+quantizable_ops_pt2e: Set = {
+    torch.ops.aten.max_pool2d_with_indices.default,
+}
+
+# Ops that:
+# 1. Ops prefer to run with int8 when int8 input is given.
+# 2. Ops don't support int8 in and fp32 out.
+int8_in_int8_out_ops_pt2e: Set = {
+    torch.ops.aten.max_pool2d_with_indices.default,
+}
+
+def _is_node_annotated(_node):
+    """
+    return True if the node is annotated, otherwise return False
+    """
+    return (
+        "quantization_annotation" in _node.meta
+        and _node.meta["quantization_annotation"]._annotated
+    )
+
+
+def _is_any_annotated(nodes: List[Node]):
+    """
+    Given a list of nodes (that represents an operator pattern),
+    check if any of the node is annotated, return True if any of the node
+    is annotated, otherwise return False.
+    """
+    return any(_is_node_annotated(node) for node in nodes)
+
+
+def _is_all_annotated(nodes: List[Node]):
+    """
+    Given a list of nodes (that represents an operator pattern),
+    return True if all of the node is annotated, otherwise return False.
+    """
+    return all(_is_node_annotated(node) for node in nodes)
+
+
+def _is_quantized_op_pt2e(node: torch.fx.Node):
+    """
+    Used for pt2e flow to check if the node is a quantized node:
+    Case1: the node has been annotated as output node of a fusion pattern.
+    Case2: the node has been annotated as single quantized node.
+    """
+    if not _is_any_annotated([node]):
+        # The node has not been annotated, directly return False
+        return False
+    quantization_annotation = node.meta.get("quantization_annotation", None)
+    assert isinstance(quantization_annotation, _X86InductorQuantizationAnnotation)
+    return True if (
+        quantization_annotation._is_output_of_fusion_pattern
+        or quantization_annotation._is_quantized_single_node
+    ) else False
+
 
 def _supported_quantized_operators() -> Dict[str, List[OperatorPatternType]]:
     # TODO: Add more supported operators here.
@@ -183,16 +252,17 @@ class X86InductorQuantizer(Quantizer):
         if isinstance(bias_node, Node):
             input_qspec_map[bias_node] = get_bias_qspec(quantization_config)
         if annotate_output:
-            conv_node.meta["quantization_annotation"] = QuantizationAnnotation(
+            conv_node.meta["quantization_annotation"] = _X86InductorQuantizationAnnotation(
                 input_qspec_map=input_qspec_map,
                 # TODO<leslie> Remove the annotate of output when oneDNN qconv support fp32 out.
                 output_qspec=get_output_act_qspec(quantization_config),
-                _annotated=True
+                _annotated=True,
+                _is_output_of_fusion_pattern=True,
             )
         else:
-            conv_node.meta["quantization_annotation"] = QuantizationAnnotation(
+            conv_node.meta["quantization_annotation"] = _X86InductorQuantizationAnnotation(
                 input_qspec_map=input_qspec_map,
-                _annotated=True
+                _annotated=True,
             )
 
     def _get_output_nodes_of_partitions(
@@ -245,16 +315,45 @@ class X86InductorQuantizer(Quantizer):
     def _annotate_for_static_quantization_config(
         self, model: torch.fx.GraphModule
     ) -> torch.fx.GraphModule:
-        # annotate the nodes from last to first since the matching is in the reversed order
-        # and fusion operator patterns (conv - relu) can get matched before single operator pattern (conv)
-        # and we will mark the matched node with "_annoated" so fusion operator pattern
-        # can take precedence over single operator pattern in this way
+        r"""
+        High-level description of quantization recipe for X86 Inductor Backend:
+        Step 1: Apply quantization recipe for fusion patterns of conv/linear to enable int8 data type actively.
+        Step 2: Propagate quantization annotation for patterns besides conv/linear. Go through the pattern in model
+        from start to the end. If a pattern supports computation with int8 data type and inputs connected to
+        quantized patterns, annotate it as quantized pattern.
+        Step 3: Since in step 2, we only annotate the inputs of quantized pattern. For some quantized patterns,
+        such as maxpool2d, which only supports output with int8 data type when the input is with int8 data type,
+        we need to annotate the output of this pattern.
+        """
+
         config = self.global_config
+
+        # Step1: Recipe of fusion patterns like conv/linear.
+        self._annotate_conv2d_fusion_pattern(model, config)
+
+        # Step2: Recipe to propagate annotation for patterns beside conv/linear.
+        # Go through all the nodes from start to end.
+        # Recipe refer to https://github.com/intel/intel-extension-for-pytorch/blob/
+        # 90d19323d96afc53fcc22ba5a7bb3fb07fdd6c1c/intel_extension_for_pytorch/quantization/_recipe.py#L538
+        for node in model.graph.nodes:
+            self._annotate_quantizable_single_op(node, config)
+
+        # Step3: For quantizable ops, such as maxpool2d, we need to quantize its output if it is quantized
+        # in inputs. So, we can fuse dq-operator-q into a quantized op.
+        # Refer to https://github.com/intel/intel-extension-for-pytorch/blob/
+        # 90d19323d96afc53fcc22ba5a7bb3fb07fdd6c1c/intel_extension_for_pytorch/quantization/_recipe.py#L487
+        for node in model.graph.nodes:
+            self._annotate_output_for_int8_in_int8_out_pattern(node, config)
+
+        return model
+
+    def _annotate_conv2d_fusion_pattern(
+        self, model: torch.fx.GraphModule, config: QuantizationConfig
+    ):
         self._annotate_conv2d_binary_unary(model, config)
         self._annotate_conv2d_binary(model, config)
         self._annotate_conv2d_unary(model, config)
         self._annotate_conv2d(model, config)
-        return model
 
     def _annotate_conv2d_binary_unary(
         self, gm: torch.fx.GraphModule, quantization_config: QuantizationConfig
@@ -282,14 +381,15 @@ class X86InductorQuantizer(Quantizer):
             self._annotate_conv_node_helper(conv_node, False, quantization_config)
             binary_node_input_qspec_map = {}
             binary_node_input_qspec_map[extra_input_node] = get_input_act_qspec(quantization_config)
-            binary_node.meta["quantization_annotation"] = QuantizationAnnotation(
+            binary_node.meta["quantization_annotation"] = _X86InductorQuantizationAnnotation(
                 input_qspec_map=binary_node_input_qspec_map,
                 _annotated=True
             )
-            unary_node.meta["quantization_annotation"] = QuantizationAnnotation(
+            unary_node.meta["quantization_annotation"] = _X86InductorQuantizationAnnotation(
                 # TODO<leslie> Remove the annotate of output when oneDNN qconv support fp32 out.
                 output_qspec=get_output_act_qspec(quantization_config),  # type: ignore[arg-type]
-                _annotated=True
+                _annotated=True,
+                _is_output_of_fusion_pattern=True,
             )
 
     def _annotate_conv2d_binary(
@@ -319,11 +419,12 @@ class X86InductorQuantizer(Quantizer):
             self._annotate_conv_node_helper(conv_node, False, quantization_config)
             binary_node_input_qspec_map = {}
             binary_node_input_qspec_map[extra_input_node] = get_input_act_qspec(quantization_config)
-            binary_node.meta["quantization_annotation"] = QuantizationAnnotation(
+            binary_node.meta["quantization_annotation"] = _X86InductorQuantizationAnnotation(
                 input_qspec_map=binary_node_input_qspec_map,
                 # TODO<leslie> Remove the annotate of output when oneDNN qconv support fp32 out.
                 output_qspec=get_output_act_qspec(quantization_config),  # type: ignore[arg-type]
-                _annotated=True
+                _annotated=True,
+                _is_output_of_fusion_pattern=True,
             )
 
     def _annotate_conv2d_unary(
@@ -342,10 +443,11 @@ class X86InductorQuantizer(Quantizer):
             if _is_annotated([unary_node, conv_node]):
                 continue
             self._annotate_conv_node_helper(conv_node, False, quantization_config)
-            unary_node.meta["quantization_annotation"] = QuantizationAnnotation(
+            unary_node.meta["quantization_annotation"] = _X86InductorQuantizationAnnotation(
                 # TODO<leslie> Remove the annotate of output when oneDNN qconv support fp32 out.
                 output_qspec=get_output_act_qspec(quantization_config),  # type: ignore[arg-type]
-                _annotated=True
+                _annotated=True,
+                _is_output_of_fusion_pattern=True,
             )
 
     def _annotate_conv2d(
@@ -368,6 +470,104 @@ class X86InductorQuantizer(Quantizer):
             if _is_annotated([conv_node]):
                 continue
             self._annotate_conv_node_helper(conv_node, True, quantization_config)
+
+    def _annotate_maxpool2d(
+        self, node: Node, quantization_config: QuantizationConfig
+    ) -> None:
+        if (
+            node.target is not torch.ops.aten.max_pool2d_with_indices.default
+            or not (
+                len(list(node.users)) == 1
+                and (list(node.users)[0].target == operator.getitem)
+            )
+        ):
+            return
+        maxpool_node = node
+        getitem_node = list(node.users)[0]
+        if _is_any_annotated([getitem_node, maxpool_node]):
+            return
+        input_node = maxpool_node.args[0]
+        assert isinstance(input_node, Node)
+        input_qspec_map = {}
+        input_qspec_map[input_node] = get_input_act_qspec(quantization_config)
+        maxpool_node.meta["quantization_annotation"] = _X86InductorQuantizationAnnotation(
+            input_qspec_map=input_qspec_map,
+            _annotated=True,
+        )
+        # Since single maxpool2d decomposed into torch.ops.aten.max_pool2d_with_indices.default - operator.getitem
+        # We annotate it as a fusion pattern.
+        getitem_node.meta["quantization_annotation"] = _X86InductorQuantizationAnnotation(
+            _annotated=True,
+            _is_output_of_fusion_pattern=True,
+        )
+
+    def _annotate_quantizable_single_op(
+        self, node: Node, quantization_config: QuantizationConfig
+    ) -> None:
+        # For single op connects to input node of quantized node, insert fake quant between them.
+        if (
+            (node.target in quantizable_ops_pt2e)
+            and (not _is_any_annotated([node]))
+            and (node.op == "call_function")
+        ):
+            def is_all_inputs_connected_to_quantized_op(input_nodes):
+                # Ensure all the inputs connect to fusion pattern or quantized node
+                for input_node in input_nodes:
+                    if not _is_quantized_op_pt2e(input_node):
+                        return False
+                return True
+
+            if node.target is torch.ops.aten.max_pool2d_with_indices.default:
+                # Recipe of maxpool2d: check input arg[0] of maxpool2d is quantized or not
+                input_nodes_to_check = [node.all_input_nodes[0]]
+                if not is_all_inputs_connected_to_quantized_op(input_nodes_to_check):
+                    return
+                self._annotate_maxpool2d(node, quantization_config)
+                return
+            else:
+                # TODO <leslie>: Enable recipes for more single quantizable op such as view and relu.
+                pass
+        return
+
+    def _annotate_output_for_int8_in_int8_out_pattern(
+        self, node: Node, quantization_config: QuantizationConfig
+    ) -> None:
+        r"""
+        Check and insert observer at output of node in int8_in_int8_out_ops_pt2e if needed.
+        Recipe refers to https://github.com/intel/intel-extension-for-pytorch/blob/
+        90d19323d96afc53fcc22ba5a7bb3fb07fdd6c1c/intel_extension_for_pytorch/quantization/_utils.py#L495
+        """
+        if (node.target in int8_in_int8_out_ops_pt2e) and (_is_any_annotated([node])):
+            if node.target == torch.ops.aten.max_pool2d_with_indices.default:
+                maxpool_node = node
+                assert len(list(maxpool_node.users)) == 1 and (
+                    list(maxpool_node.users)[0].target == operator.getitem
+                )
+                getitem_node = list(node.users)[0]
+                if not _is_all_annotated([getitem_node, maxpool_node]):
+                    return
+                # Get the quantization_annotation from getitem_node
+                getitem_quantization_annotation = (
+                    getitem_node.meta["quantization_annotation"]
+                    if "quantization_annotation" in getitem_node.meta
+                    else None
+                )
+                if (
+                    getitem_quantization_annotation
+                    and getitem_quantization_annotation._is_output_of_fusion_pattern
+                ):
+                    # Annotate the output_qspec of getitem_node
+                    input_act = maxpool_node.args[0]
+                    assert isinstance(input_act, Node)
+                    assert isinstance(maxpool_node, Node)
+                    edge_or_node: Tuple[Node, Node] = (input_act, maxpool_node)
+                    getitem_node.meta[
+                        "quantization_annotation"
+                    ].output_qspec = SharedQuantizationSpec(edge_or_node)
+            else:
+                # TODO <leslie>: Enable recipes for more int8_in_int8_out_ops
+                pass
+        return
 
     def validate(self, model: torch.fx.GraphModule) -> None:
         pass
